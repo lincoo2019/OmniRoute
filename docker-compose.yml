@@ -42,7 +42,16 @@ x-common: &common
     - LIVE_WS_HOST=${LIVE_WS_HOST:-127.0.0.1}
     - LIVE_WS_ALLOWED_ORIGINS=${LIVE_WS_ALLOWED_ORIGINS:-http://localhost:20128,http://127.0.0.1:20128}
     - REDIS_URL=${REDIS_URL:-redis://redis:6379}
-    - NODE_OPTIONS=--max-old-space-size=2048
+    # Heap ceiling for the standalone server. Derive it from OMNIROUTE_MEMORY_MB
+    # (see .env.example §17) instead of hard-coding a literal: an explicit
+    # NODE_OPTIONS wins over the image's own OMNIROUTE_MEMORY_MB wiring
+    # (scripts/dev/run-standalone.mjs keeps it whenever OMNIROUTE_MEMORY_MB is
+    # unset, #5238), so Compose handed every host a 2 GB heap no matter how much
+    # RAM it actually had. On a 2 GB box that overshoot pushed the host into
+    # swap, spiked memory PSI and tripped the resource-pressure guard, which
+    # then answers EVERY provider with 503 ("resource pressure"). Size it to
+    # roughly half the box's RAM: 1 GB → 512, 2 GB → 1024, 4 GB → 2048.
+    - NODE_OPTIONS=--max-old-space-size=${OMNIROUTE_MEMORY_MB:-1024}
     # Codex App-Server transport (provider: codex-app-server). Inert unless the
     # `codex-app-server` compose profile is up (the sidecar below). Points the app
     # at the internal sidecar; the capability token is shared via the mounted file.

@@ -69,6 +69,62 @@ export function envHasExplicitOmnirouteMemoryMb(env) {
 }
 
 /**
+ * Native memory the V8 heap does not account for: better-sqlite3, undici
+ * buffers, onnxruntime, the Next.js runtime and OS page cache. Derived from the
+ * ~300 MB baseline documented in `.env.example` §17, plus a small margin.
+ */
+const NATIVE_MEMORY_RESERVE_MB = 320;
+
+/**
+ * Container memory ceiling (MB) as reported by the runtime, or null when the
+ * process is not memory-capped. `process.constrainedMemory()` (Node >= 19.6 /
+ * 20.13) returns the cgroup limit inside a memory-capped container and
+ * undefined/Infinity otherwise, so a bare-metal host degrades to "no known
+ * limit" rather than a bogus one.
+ * @param {() => number | undefined} [constrainedMemory]
+ * @returns {number | null}
+ */
+export function resolveContainerMemoryMb(
+  constrainedMemory = () => process.constrainedMemory?.()
+) {
+  const bytes = Number(constrainedMemory?.());
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  return Math.round(bytes / (1024 * 1024));
+}
+
+/**
+ * Warn when the effective V8 heap ceiling leaves no room for native memory
+ * under the container's own memory limit (#2939).
+ *
+ * `--max-old-space-size` bounds only the JS heap; better-sqlite3, undici
+ * buffers, onnxruntime and the Next.js runtime allocate outside it. Node
+ * derives its defaults from the HOST's RAM, so a memory-capped container can
+ * carry a heap the box cannot back: the host starts swapping, memory PSI
+ * climbs, and `open-sse/utils/resourcePressure.ts` sheds every chat request
+ * with a 503 long before V8 itself is full. Surfacing the mismatch at boot
+ * turns that silent outage into an actionable log line.
+ *
+ * @param {number | null | undefined} heapMb — effective heap ceiling
+ * @param {number | null | undefined} containerMb — container memory limit
+ * @param {(message: string) => void} [log]
+ * @returns {boolean} true when a warn was emitted
+ */
+export function warnHeapExceedsContainerLimit(heapMb, containerMb, log = console.warn) {
+  const heap = Number(heapMb);
+  const container = Number(containerMb);
+  if (!Number.isFinite(heap) || heap <= 0) return false;
+  if (!Number.isFinite(container) || container <= 0) return false;
+  if (heap + NATIVE_MEMORY_RESERVE_MB <= container) return false;
+  log(
+    `[omniroute] heap ceiling ${heap} MB leaves under ${NATIVE_MEMORY_RESERVE_MB} MB of the container's ` +
+      `${container} MB memory limit for native/OS allocations. Expect OOM kills or swap thrash, which trips the ` +
+      `resource-pressure guard and 503s every provider. Lower OMNIROUTE_MEMORY_MB (roughly half the container ` +
+      `limit) or raise the container's memory.`
+  );
+  return true;
+}
+
+/**
  * Docker `run-standalone.mjs` appends `--max-old-space-size` from
  * OMNIROUTE_MEMORY_MB. V8 last-flag semantics mean that appended value wins
  * over an earlier NODE_OPTIONS heap. Warn once when both are set and disagree

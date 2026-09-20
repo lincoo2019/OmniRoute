@@ -7,6 +7,9 @@ import {
   resolveMaxOldSpaceMb,
   warnConflictingHeapLimits,
   buildStandaloneNodeOptions,
+  parseNodeOptionsHeapMb,
+  resolveContainerMemoryMb,
+  warnHeapExceedsContainerLimit,
   spawnWithForwardedSignals,
 } from "../build/runtime-env.mjs";
 import { bootstrapEnv } from "../build/bootstrap-env.mjs";
@@ -22,6 +25,15 @@ const childEnv = withRuntimePortEnv(env, runtimePorts);
 const maxOldSpaceMb = resolveMaxOldSpaceMb(childEnv.OMNIROUTE_MEMORY_MB);
 warnConflictingHeapLimits(childEnv, maxOldSpaceMb);
 childEnv.NODE_OPTIONS = buildStandaloneNodeOptions(childEnv, maxOldSpaceMb);
+
+// #2939: a heap ceiling the container cannot back stays silent until the host
+// starts swapping — and a thrashing host trips the resource-pressure guard,
+// which then 503s every provider. Warn at boot so the misconfiguration is
+// visible before it looks like an upstream outage.
+warnHeapExceedsContainerLimit(
+  parseNodeOptionsHeapMb(childEnv.NODE_OPTIONS),
+  resolveContainerMemoryMb()
+);
 
 // Prefer the WS-aware wrapper (server-ws.mjs) over the bare Next standalone
 // server.js: it installs the trusted peer-IP stamp (scripts/dev/peer-stamp.mjs)
